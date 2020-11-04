@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+#include <ctime>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
@@ -23,6 +25,12 @@
     } \
   } while (false)
 
+static double GetTime() {
+  timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec + t.tv_nsec / 1e9;
+}
+
 static int server_connect(uint16_t server_port) {
   struct sockaddr_in inaddr;
   int lsock, dsock, optval, ret;
@@ -43,8 +51,6 @@ static int server_connect(uint16_t server_port) {
 
   ret = listen(lsock, 0);
   CHECK_COND(ret >= 0);
-
-  fprintf(stdout, "Waiting for connection...\n");
 
   dsock = accept(lsock, NULL, NULL);
   CHECK_COND(dsock >= 0);
@@ -77,9 +83,9 @@ static int client_connect(const char *server, uint16_t server_port) {
   return connfd;
 }
 
-static int sendrecv(int sock, const void *sbuf, size_t slen, void **rbuf) {
+static int sendrecv(int sock, const void *sbuf, size_t slen, void **rbuf, size_t* rlen) {
   int ret = 0;
-  size_t rlen = 0;
+  size_t rlen_ = 0;
   *rbuf = NULL;
 
   ret = send(sock, &slen, sizeof(slen), 0);
@@ -94,25 +100,30 @@ static int sendrecv(int sock, const void *sbuf, size_t slen, void **rbuf) {
     return -1;
   }
 
-  ret = recv(sock, &rlen, sizeof(rlen), MSG_WAITALL);
-  if ((ret != sizeof(rlen)) || (rlen > (SIZE_MAX / 2))) {
+  ret = recv(sock, &rlen_, sizeof(rlen_), MSG_WAITALL);
+  if ((ret != sizeof(rlen_)) || (rlen_ > (SIZE_MAX / 2))) {
     fprintf(stderr, "failed to receive device address length, return value %d\n", ret);
     return -1;
   }
+  if (rlen) *rlen = rlen_;
 
-  *rbuf = calloc(1, rlen);
+  *rbuf = calloc(1, rlen_);
   if (!*rbuf) {
     fprintf(stderr, "failed to allocate receive buffer\n");
     return -1;
   }
 
-  ret = recv(sock, *rbuf, rlen, MSG_WAITALL);
-  if (ret != (int)rlen) {
+  ret = recv(sock, *rbuf, rlen_, MSG_WAITALL);
+  if (ret != (int)rlen_) {
     fprintf(stderr, "failed to receive device address, return value %d\n", ret);
     return -1;
   }
 
   return 0;
+}
+
+static int sendrecv(int sock, const void *sbuf, size_t slen, void **rbuf) {
+  return sendrecv(sock, sbuf, slen, rbuf, NULL);
 }
 
 static int barrier(int oob_sock) {
