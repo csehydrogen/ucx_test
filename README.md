@@ -1,5 +1,11 @@
 # ucx_test
 
+## Commands
+
+* `ucx_info -d`: Print devices that UCX can utilize
+* `ucx_info -c`: Print all UCX-related environment variables
+* `ucx-info -f`: Print documentation for env vars
+
 ## UCT
 
 UCT is a transport layer. UCT provides context management, and allocation of device-specific memories. UCT provides three communication APIs: immediate (short), buffered copy-and-send (bcopy), and zero-copy (zcopy).
@@ -23,3 +29,17 @@ UCT is a transport layer. UCT provides context management, and allocation of dev
   * Bcopy requires data and packer callback.
   * Zcopy requires memory registering(if `UCT_MD_FLAG_NEED_MEMH`), description of buffer to send(`uct_iov_t`), and completion callback.
 * Receiver: receive data through a registered active message handler.
+
+## UCP
+
+UCP implements higher-level protocols such as tag matching.
+
+### Program Flow
+
+* Create UCP context(`ucp_context_h`)
+* Create UCP worker(`ucp_worker_h`)
+* Server: Create UCP listener(`ucp_listener_h`), receive connection requests(`ucp_conn_request_h`), and create ep(`ucp_ep_h`)
+* Client: Just create cp.
+* Send: Just post send request(e.g., `ucp_tag_send_nbx`)
+* Receive: Probe message(e.g., `ucp_tag_probe_nb`), and post recv request(e.g., `ucp_tag_msg_recv_nb`)
+  * 
