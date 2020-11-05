@@ -139,3 +139,11 @@ static int barrier(int oob_sock) {
 
   return !(res == sizeof(dummy));
 }
+
+static void print_addrinfo(addrinfo* res) {
+  for (addrinfo* it = res; it != NULL; it = it->ai_next) {
+    char host[99], serv[99];
+    int ret = getnameinfo(it->ai_addr, it->ai_addrlen, host, sizeof(host), serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+    printf("host=%s, serv=%s, flags=%d, family=%d, socktype=%d, protocol=%d, addrlen=%d, err=%d(%s)\n", host, serv, it->ai_flags, it->ai_family, it->ai_socktype, it->ai_protocol, it->ai_addrlen, ret, ret == 0 ? "No error" : gai_strerror(ret));
+  }
+}

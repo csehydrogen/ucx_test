@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cassert>
+#include <vector>
 
 #include <ucp/api/ucp.h>
 
@@ -15,6 +16,10 @@ static test_mode_t test_mode = TEST_MODE_PROBE;
 
 struct my_context {
   int completed;
+};
+
+struct listener_context {
+  std::vector<ucp_conn_request_h> reqs;
 };
 
 static void request_init(void *request) {
@@ -43,6 +48,13 @@ static void send_handler(void *request, ucs_status_t status, void *ctx) {
       status, ucs_status_string(status));
 }
 
+static void server_conn_handle_cb(ucp_conn_request_h conn_request, void *arg) {
+  listener_context *ctx = (listener_context*)arg;
+
+  printf("Connection handler received a new request.\n");
+  ctx->reqs.push_back(conn_request);
+}
+
 int main(int argc, char** argv) {
   /* args setup */
   char* server_name = NULL;
@@ -57,7 +69,7 @@ int main(int argc, char** argv) {
     printf("  client: %s [server]\n", argv[0]);
     return 0;
   }
-  uint16_t server_port = 13337;
+  const char* server_port = "13337";
 
   ucs_status_t status;
 
@@ -108,38 +120,6 @@ int main(int argc, char** argv) {
   status = ucp_worker_create(ucp_context, &worker_params, &ucp_worker);
   CHECK_UCS(status);
 
-  /*
-   * Get address of UCP worker
-   */
-  ucp_address_t* local_addr;
-  size_t local_addr_len;
-  status = ucp_worker_get_address(ucp_worker, &local_addr, &local_addr_len);
-  CHECK_UCS(status);
-
-  printf("UCP local address(%ldB)=", local_addr_len);
-  for (int i = 0; i < local_addr_len; ++i)
-    printf(" %02X", ((unsigned char*)local_addr)[i]);
-  printf("\n");
-
-  /*
-   * Exchange address via out-of-band channel
-   */
-  int oob_sock;
-  ucp_address_t* peer_addr;
-  size_t peer_addr_len;
-  if (server_name) {
-    oob_sock = client_connect(server_name, server_port);
-  } else {
-    oob_sock = server_connect(server_port);
-  }
-  CHECK_COND(oob_sock != -1);
-  sendrecv(oob_sock, local_addr, local_addr_len, (void**)&peer_addr, &peer_addr_len);
-
-  printf("UCP peer address(%ldB)=", peer_addr_len);
-  for (int i = 0; i < peer_addr_len; ++i)
-    printf(" %02X", ((unsigned char*)peer_addr)[i]);
-  printf("\n");
-
   const ucp_tag_t tag = 0x1337A880;
   const ucp_tag_t tag_mask = 0xFFFFFFFF;
 
@@ -151,16 +131,34 @@ int main(int argc, char** argv) {
      * UCP client
      */
 
+    addrinfo* res;
+    int ret = getaddrinfo(server_name, server_port, NULL, &res);
+    CHECK_COND(ret == 0);
+    CHECK_COND(res != NULL);
+
+    print_addrinfo(res);
+
+    printf("Connecting to the first address...\n");
+
+    sockaddr* connect_addr = res->ai_addr;
+    socklen_t connect_addrlen = res->ai_addrlen;
+
     /*
      * Create ep to server
      */
+
     ucp_ep_params_t ep_params;
-    ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
-    ep_params.address = peer_addr;
+    ep_params.field_mask = UCP_EP_PARAM_FIELD_FLAGS
+                         | UCP_EP_PARAM_FIELD_SOCK_ADDR;
+    ep_params.flags = UCP_EP_PARAMS_FLAGS_CLIENT_SERVER;
+    ep_params.sockaddr.addr = connect_addr;
+    ep_params.sockaddr.addrlen = connect_addrlen;
 
     ucp_ep_h server_ep;
     status = ucp_ep_create(ucp_worker, &ep_params, &server_ep);
     CHECK_UCS(status);
+
+    freeaddrinfo(res);
 
     ucp_tag_message_h msg_tag;
     ucp_tag_recv_info_t info_tag;
@@ -206,11 +204,58 @@ int main(int argc, char** argv) {
      */
 
     /*
+     * Setup listener to accept a connection
+     */
+
+    addrinfo hint;
+    memset(&hint, 0, sizeof(hint));
+    hint.ai_flags = AI_PASSIVE;
+
+    addrinfo* res;
+    int ret = getaddrinfo(NULL, server_port, &hint, &res);
+    CHECK_COND(ret == 0);
+    CHECK_COND(res != NULL);
+
+    print_addrinfo(res);
+
+    printf("Listening on the first address...\n");
+
+    sockaddr* listen_addr = res->ai_addr;
+    socklen_t listen_addrlen = res->ai_addrlen;
+
+    listener_context lc;
+
+    ucp_listener_params_t lp;
+    lp.field_mask = UCP_LISTENER_PARAM_FIELD_SOCK_ADDR
+                  | UCP_LISTENER_PARAM_FIELD_CONN_HANDLER;
+    lp.sockaddr.addr = listen_addr;
+    lp.sockaddr.addrlen = listen_addrlen;
+    lp.conn_handler.cb = server_conn_handle_cb;
+    lp.conn_handler.arg = &lc;
+
+    ucp_listener_h listener;
+    status = ucp_listener_create(ucp_worker, &lp, &listener);
+    CHECK_UCS(status);
+
+    freeaddrinfo(res);
+
+    while (lc.reqs.size() == 0) {
+      ucp_worker_progress(ucp_worker);
+    }
+
+    printf("%ld connection requests received. Only accept the first one.\n", lc.reqs.size());
+    for (int i = 1; i < lc.reqs.size(); ++i) {
+      status = ucp_listener_reject(listener, lc.reqs[i]);
+      CHECK_UCS(status);
+    }
+
+    /*
      * Create ep to client
      */
+
     ucp_ep_params_t ep_params;
-    ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
-    ep_params.address = peer_addr;
+    ep_params.field_mask = UCP_EP_PARAM_FIELD_CONN_REQUEST;
+    ep_params.conn_request = lc.reqs[0];
 
     ucp_ep_h client_ep;
     status = ucp_ep_create(ucp_worker, &ep_params, &client_ep);
